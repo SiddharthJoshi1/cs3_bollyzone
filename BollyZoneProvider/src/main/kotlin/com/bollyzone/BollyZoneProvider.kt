@@ -111,18 +111,17 @@ class BollyZoneProvider : MainAPI() {
         watchLinks.amap { linkEl ->
             val groundbanksUrl = linkEl.attr("href").takeIf { it.isNotBlank() } ?: return@amap
 
-            // Extract the server name and quality from the OptionBx div
             val optionBox = linkEl.closest(".OptionBx")
             val serverName = optionBox?.selectFirst(".AAIco-dns")?.text()?.trim() ?: "BollyZone"
             val qualityLabel = optionBox?.selectFirst(".AAIco-equalizer")?.text()?.trim() ?: "HD"
             val sourceLabel = "$serverName $qualityLabel"
 
             try {
-                // ── Hop 1: Fetch item.php → get the freeshorturls button href ──
+                // ── Hop 1: Fetch item.php — keep UA here, needed for Referer check ──
                 val itemPage = app.get(
                     groundbanksUrl,
                     referer = mainUrl,
-                    headers = mapOf("User-Agent" to USER_AGENT) // MUST use enforced UA
+                    headers = mapOf("User-Agent" to USER_AGENT)
                 ).document
 
                 val freeShortsUrl = itemPage
@@ -131,25 +130,27 @@ class BollyZoneProvider : MainAPI() {
                     ?.takeIf { it.isNotBlank() }
                     ?: return@amap
 
-                // ── Hop 2: Extract type and token from freeshorturls path ──────
+                // ── Hop 2: Extract type and token ────────────────────────────────
                 val pathParts = freeShortsUrl.trimEnd('/').split('/')
                 val token = pathParts.last()
-                val type = pathParts.dropLast(1).last()
+                val type  = pathParts.dropLast(1).last()
 
-                // ── Hop 3: GET the flow.tvlogy.to player page ─────────────────
-                val playerUrl = "https://flow.tvlogy.to/$type/$token/"
+                // ── Hop 3: GET flow.tvlogy.to — NO explicit UA ───────────────────
+                // flow.tvlogy.to encodes whatever UA it receives into the .m3u8 token.
+                // We must NOT set a UA here so CloudStream uses its own default,
+                // which will then match what ExoPlayer sends during playback.
+                val playerUrl  = "https://flow.tvlogy.to/$type/$token/"
                 val playerPage = app.get(
                     playerUrl,
-                    referer = groundbanksUrl,
-                    headers = mapOf("User-Agent" to USER_AGENT) // MUST use enforced UA
+                    referer = groundbanksUrl
+                    // No headers here intentionally
                 ).text
 
-                // ── Hop 4: Extract .m3u8 URL from Video.js sources config ─────
-                // Handled escaped slashes like https:\/\/parrot.tvlogy.to\/...
+                // ── Hop 4: Extract .m3u8 URL ──────────────────────────────────────
                 val m3u8Url = Regex(""""src"\s*:\s*"(https?://[^"]+\.m3u8[^"]*)"""")
                     .find(playerPage)
                     ?.groupValues?.get(1)
-                    ?.replace("\\/", "/") // Unescape slashes!
+                    ?.replace("\\/", "/")
                     ?: return@amap
 
                 val qualityStr = Regex(""""label"\s*:\s*"([^"]+)"""")
@@ -166,21 +167,23 @@ class BollyZoneProvider : MainAPI() {
 
                 val qualityVal = when (qualityStr.uppercase()) {
                     "FHD", "1080P" -> Qualities.P1080.value
-                    "HD", "720P" -> Qualities.P720.value
-                    "SD", "480P" -> Qualities.P480.value
-                    else -> Qualities.Unknown.value
+                    "HD",  "720P"  -> Qualities.P720.value
+                    "SD",  "480P"  -> Qualities.P480.value
+                    else           -> Qualities.Unknown.value
                 }
 
-                // ── Hop 5: Emit the stream link ───────────────────────────────
+                // ── Hop 5: Emit stream link — NO UA in headers ───────────────────
+                // ExoPlayer must use the same UA that was used in Hop 3.
+                // Setting an explicit UA here would cause a token mismatch → 404.
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
-                        name = "$sourceLabel - $videoTitle",
-                        url = m3u8Url,
+                        name   = "$sourceLabel - $videoTitle",
+                        url    = m3u8Url,
                     ) {
-                        this.headers = mapOf("User-Agent" to USER_AGENT)
                         this.referer = playerUrl
                         this.quality = qualityVal
+                        // No User-Agent — intentional
                     }
                 )
 
