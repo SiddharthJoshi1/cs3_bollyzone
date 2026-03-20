@@ -42,18 +42,24 @@ jobs:
 
       - name: Generate plugins.json
         run: |
-          echo '[
+          FILESIZE=$(wc -c < BollyZoneProvider/build/BollyZoneProvider.cs3)
+          echo "[
             {
-              "name": "BollyZone",
-              "pluginId": "com.bollyzone",
-              "version": 1,
-              "url": "https://raw.githubusercontent.com/SiddharthJoshi1/cs3_bollyzone/builds/BollyZoneProvider.cs3",
-              "description": "Watch Indian TV Shows and Hindi Dramas from BollyZone",
-              "status": 1,
-              "language": "hi",
-              "iconUrl": "https://www.bollyzone.to/wp-content/uploads/2021/10/bollyzone-logo.png"
+              \"name\": \"BollyZone\",
+              \"internalName\": \"BollyZoneProvider\",
+              \"url\": \"https://raw.githubusercontent.com/SiddharthJoshi1/cs3_bollyzone/builds/BollyZoneProvider.cs3\",
+              \"version\": 2,
+              \"apiVersion\": 1,
+              \"repositoryUrl\": \"https://github.com/SiddharthJoshi1/cs3_bollyzone\",
+              \"fileSize\": $FILESIZE,
+              \"description\": \"Watch Indian TV Shows and Hindi Dramas from BollyZone\",
+              \"status\": 0,
+              \"language\": \"hi\",
+              \"authors\": [\"SiddharthJoshi1\"],
+              \"tvTypes\": [\"TvSeries\"],
+              \"iconUrl\": \"https://www.bollyzone.to/wp-content/uploads/2021/10/bollyzone-logo.png\"
             }
-          ]' > BollyZoneProvider/build/plugins.json
+          ]" > BollyZoneProvider/build/plugins.json
 
       - name: Deploy to builds branch
         uses: JamesIves/github-pages-deploy-action@v4
