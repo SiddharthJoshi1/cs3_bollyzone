@@ -49,7 +49,7 @@ jobs:
               "version": 1,
               "url": "https://raw.githubusercontent.com/SiddharthJoshi1/cs3_bollyzone/builds/BollyZoneProvider.cs3",
               "description": "Watch Indian TV Shows and Hindi Dramas from BollyZone",
-              "status": 0,
+              "status": 1,
               "language": "hi",
               "iconUrl": "https://www.bollyzone.to/wp-content/uploads/2021/10/bollyzone-logo.png"
             }
