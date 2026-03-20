@@ -1,8 +1,10 @@
 package com.bollyzone
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
 
 class BollyZoneProvider : MainAPI() {
 
@@ -17,28 +19,62 @@ class BollyZoneProvider : MainAPI() {
     // HOME PAGE
     // ---------------------------------------------------------------------------
     override val mainPage = mainPageOf(
-        "$mainUrl/series/page/"             to "Latest Episodes",
-        "$mainUrl/category/sab-tv/page/"    to "SAB TV",
-        "$mainUrl/category/sony-tv/page/"   to "Sony TV",
-        "$mainUrl/category/star-plus/page/" to "Star Plus",
-        "$mainUrl/category/colors-tv/page/" to "Colors TV",
-        "$mainUrl/category/zee-tv/page/"    to "Zee TV",
+        "$mainUrl/series/page/"          to "Latest Episodes",
+        "$mainUrl/tv-channels/#starplus" to "Star Plus",
+        "$mainUrl/tv-channels/#sonytv"   to "Sony TV",
+        "$mainUrl/tv-channels/#colorstv" to "Colors TV",
+        "$mainUrl/tv-channels/#zeetv"    to "Zee TV",
+        "$mainUrl/tv-channels/#sabtv"    to "SAB TV",
+        "$mainUrl/tv-channels/#andtv"    to "And TV",
+        "$mainUrl/tv-channels/#mtv"      to "MTV"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("${request.data}$page/").document
-        val items = document.select("li.ml-item, div.ml-item")
-            .mapNotNull { it.toEpisodeSearchResult() }
-        return newHomePageResponse(request.name, items)
+        val url = request.data
+
+        if (url.contains("#")) {
+            // These are channel lists on a single static page, so there's no pagination.
+            // If Cloudstream asks for page 2+, return an empty list to stop it from loading infinitely.
+            if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
+
+            val baseUrl = url.substringBefore("#")
+            val anchor = url.substringAfter("#")
+            val document = app.get(baseUrl).document
+
+            // Find the carousel immediately following the header with the matching anchor name
+            // e.g. <h2 class="Title"><a name="colorstv">...</a></h2> <div class="MovieListTop owl-carousel">...</div>
+            val items = document.select("h2:has(a[name=$anchor]) + div.MovieListTop")
+                .select(".TPostMv, .TPost, .ml-item")
+                .mapNotNull { it.toEpisodeSearchResult() }
+                .distinctBy { it.url }
+
+            return newHomePageResponse(request.name, items, hasNext = false)
+
+        } else {
+            // Paginated "Latest Episodes" (/series/page/1/)
+            val document = app.get("$url$page/").document
+
+            val items = document.select(".TPostMv, .TPost, .ml-item")
+                .mapNotNull { it.toEpisodeSearchResult() }
+                .distinctBy { it.url }
+
+            // Check if there is a "Next" button on the page to allow Cloudstream to load more
+            val hasNext = document.selectFirst("a.next, .pagination a[rel=next]") != null
+
+            return newHomePageResponse(request.name, items, hasNext)
+        }
     }
 
     // ---------------------------------------------------------------------------
     // SEARCH
     // ---------------------------------------------------------------------------
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?s=${query.encodeUri()}").document
-        return document.select("li.ml-item, div.ml-item")
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val document = app.get("$mainUrl/?s=$encodedQuery").document
+
+        return document.select(".TPostMv, .TPost, .ml-item")
             .mapNotNull { it.toEpisodeSearchResult() }
+            .distinctBy { it.url }
     }
 
     // ---------------------------------------------------------------------------
@@ -52,6 +88,7 @@ class BollyZoneProvider : MainAPI() {
             val categoryUrl = document
                 .selectFirst("a[href*='/category/']")
                 ?.attr("href")
+
             if (categoryUrl != null) loadShowPage(categoryUrl)
             else loadSingleEpisode(url, document)
         }
@@ -59,40 +96,6 @@ class BollyZoneProvider : MainAPI() {
 
     // ---------------------------------------------------------------------------
     // LOAD LINKS
-    //
-    // Fully confirmed chain (all responses inspected):
-    //
-    //   1. bollyzone.to episode page
-    //      → <a href="https://groundbanks.net/item.php?id=XXXXX">
-    //
-    //   2. groundbanks.net/item.php?id=XXXXX  [needs Referer: bollyzone.to]
-    //      → <a class="button button1"
-    //             href="https://route.freeshorturls.com/g/nflix/{TOKEN}">
-    //
-    //   3. The token in the freeshorturls URL is the SAME token used by the
-    //      final player. So we can skip the redirect chain entirely and
-    //      construct the embed URL directly:
-    //        https://flow.tvlogy.to/{type}/{TOKEN}/
-    //
-    //   4. flow.tvlogy.to/{type}/{TOKEN}/ returns a plain HTML page with a
-    //      Video.js config containing the .m3u8 stream URL:
-    //
-    //      var config = {
-    //        sources: [{"src":"https://parrot.tvlogy.to/.../.../video.m3u8?token=...",
-    //                   "type":"application/x-mpegURL", "label":"HD"}],
-    //        ...
-    //      }
-    //
-    //      The token in the .m3u8 URL is Base64(UserAgent||IP) — it is bound
-    //      to the requesting device's UA and IP. This is fine for local playback
-    //      since CloudStream fetches and plays from the same device.
-    //
-    // Strategy:
-    //   Hop 1 → Fetch item.php (with Referer), extract freeshorturls button href
-    //   Hop 2 → Parse token from freeshorturls URL path
-    //   Hop 3 → GET flow.tvlogy.to/{type}/{token}/
-    //   Hop 4 → Regex the .m3u8 src from the sources JSON in the page
-    //   Hop 5 → Emit as ExtractorLink
     // ---------------------------------------------------------------------------
     override suspend fun loadLinks(
         data: String,
@@ -105,84 +108,79 @@ class BollyZoneProvider : MainAPI() {
         val watchLinks = document.select("a[href*='groundbanks.net']")
         if (watchLinks.isEmpty()) return false
 
-        watchLinks.apmap { linkEl ->
-            val groundbanksUrl = linkEl.attr("href").takeIf { it.isNotBlank() } ?: return@apmap
+        watchLinks.amap { linkEl ->
+            val groundbanksUrl = linkEl.attr("href").takeIf { it.isNotBlank() } ?: return@amap
 
-            val sourceLabel = linkEl.closest("tr")
-                ?.select("td")
-                ?.dropLast(1)
-                ?.joinToString(" ") { it.text().trim() }
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?: "BollyZone"
+            // Extract the server name and quality from the OptionBx div
+            val optionBox = linkEl.closest(".OptionBx")
+            val serverName = optionBox?.selectFirst(".AAIco-dns")?.text()?.trim() ?: "BollyZone"
+            val qualityLabel = optionBox?.selectFirst(".AAIco-equalizer")?.text()?.trim() ?: "HD"
+            val sourceLabel = "$serverName $qualityLabel"
 
             try {
                 // ── Hop 1: Fetch item.php → get the freeshorturls button href ──
                 val itemPage = app.get(
                     groundbanksUrl,
                     referer = mainUrl,
-                    headers = mapOf("User-Agent" to USER_AGENT)
+                    headers = mapOf("User-Agent" to USER_AGENT) // MUST use enforced UA
                 ).document
 
-                // <a class="button button1" href="https://route.freeshorturls.com/g/nflix/TOKEN">
                 val freeShortsUrl = itemPage
                     .selectFirst("a.button.button1, a.button1")
                     ?.attr("href")
                     ?.takeIf { it.isNotBlank() }
-                    ?: return@apmap
+                    ?: return@amap
 
                 // ── Hop 2: Extract type and token from freeshorturls path ──────
-                // Pattern: https://route.freeshorturls.com/g/{type}/{token}
-                // e.g.:    https://route.freeshorturls.com/g/nflix/4ttfIygLaxn4XkG
                 val pathParts = freeShortsUrl.trimEnd('/').split('/')
                 val token = pathParts.last()
-                val type  = pathParts.dropLast(1).last() // "nflix"
+                val type = pathParts.dropLast(1).last()
 
                 // ── Hop 3: GET the flow.tvlogy.to player page ─────────────────
-                // No cookies needed — confirmed 200 OK without them
-                val playerUrl  = "https://flow.tvlogy.to/$type/$token/"
+                val playerUrl = "https://flow.tvlogy.to/$type/$token/"
                 val playerPage = app.get(
                     playerUrl,
                     referer = groundbanksUrl,
-                    headers = mapOf("User-Agent" to USER_AGENT)
+                    headers = mapOf("User-Agent" to USER_AGENT) // MUST use enforced UA
                 ).text
 
                 // ── Hop 4: Extract .m3u8 URL from Video.js sources config ─────
-                // var config = { sources: [{"src":"https://parrot.tvlogy.to/.../video.m3u8?token=..."}] }
-                val m3u8Url = Regex(""""src"\s*:\s*"(https://[^"]+\.m3u8[^"]*)"""")
+                // Handled escaped slashes like https:\/\/parrot.tvlogy.to\/...
+                val m3u8Url = Regex(""""src"\s*:\s*"(https?://[^"]+\.m3u8[^"]*)"""")
                     .find(playerPage)
                     ?.groupValues?.get(1)
-                    ?: return@apmap
+                    ?.replace("\\/", "/") // Unescape slashes!
+                    ?: return@amap
 
-                // Also extract quality label if present ("HD", "FHD", etc.)
-                val quality = Regex(""""label"\s*:\s*"([^"]+)"""")
+                val qualityStr = Regex(""""label"\s*:\s*"([^"]+)"""")
                     .find(playerPage)
                     ?.groupValues?.get(1)
-                    ?: sourceLabel
+                    ?: qualityLabel
 
-                // Extract video title from page <title> for display
                 val videoTitle = Regex("""<title>([^<]+)</title>""")
                     .find(playerPage)
                     ?.groupValues?.get(1)
                     ?.removeSuffix(".mp4")
                     ?.trim()
-                    ?: quality
+                    ?: qualityStr
+
+                val qualityVal = when (qualityStr.uppercase()) {
+                    "FHD", "1080P" -> Qualities.P1080.value
+                    "HD", "720P" -> Qualities.P720.value
+                    "SD", "480P" -> Qualities.P480.value
+                    else -> Qualities.Unknown.value
+                }
 
                 // ── Hop 5: Emit the stream link ───────────────────────────────
-                callback(
+                callback.invoke(
                     newExtractorLink(
-                        source  = "BollyZone ($quality)",
-                        name    = videoTitle,
-                        url     = m3u8Url,
-                        referer = playerUrl
+                        source = this.name,
+                        name = "$sourceLabel - $videoTitle",
+                        url = m3u8Url,
                     ) {
-                        this.quality = when (quality.uppercase()) {
-                            "FHD", "1080P" -> Qualities.P1080.value
-                            "HD",  "720P"  -> Qualities.P720.value
-                            "SD",  "480P"  -> Qualities.P480.value
-                            else           -> Qualities.Unknown.value
-                        }
-                        this.isM3u8 = true
+                        this.headers = mapOf("User-Agent" to USER_AGENT)
+                        this.referer = playerUrl
+                        this.quality = qualityVal
                     }
                 )
 
@@ -202,7 +200,7 @@ class BollyZoneProvider : MainAPI() {
         val firstPageDoc = app.get(categoryUrl).document
 
         val showTitle = firstPageDoc
-            .selectFirst("h2.cat-title, h1, .page-title, header h2")
+            .selectFirst("h1.Title, h2.Title, h1, .page-title")
             ?.text()?.trim()
             ?: categoryUrl
                 .substringAfterLast("/category/")
@@ -211,34 +209,48 @@ class BollyZoneProvider : MainAPI() {
                 .replaceFirstChar { it.uppercase() }
 
         val posterUrl = firstPageDoc
-            .selectFirst("li.ml-item img, div.ml-item img")
-            ?.attr("src")
+            .selectFirst(".TPost img, .ml-item img")
+            ?.let { img -> img.attr("data-src").takeIf { it.isNotBlank() } ?: img.attr("src") }
 
         val episodes = mutableListOf<Episode>()
         var pageNum = 1
         var hasMore = true
 
-        while (hasMore) {
+        // Prevent Cloudstream from timing out if a show has 50+ pages.
+        val maxPagesToFetch = 4
+
+        while (hasMore && pageNum <= maxPagesToFetch) {
             val pageUrl = if (pageNum == 1) categoryUrl
-                          else "${categoryUrl.trimEnd('/')}/page/$pageNum/"
+            else "${categoryUrl.trimEnd('/')}/page/$pageNum/"
             val pageDoc = if (pageNum == 1) firstPageDoc else app.get(pageUrl).document
 
-            val cards = pageDoc.select("li.ml-item, div.ml-item")
+            val cards = pageDoc.select(".TPostMv, .TPost, .ml-item")
             if (cards.isEmpty()) break
 
-            cards.forEach { card ->
-                val epUrl    = card.selectFirst("a")?.attr("href") ?: return@forEach
-                val epTitle  = card.selectFirst("h2")?.text()?.trim()
-                    ?: epUrl.substringAfterLast("/").replace("-", " ")
-                val epPoster = card.selectFirst("img")?.attr("src")
-                val dateStr  = epTitle.extractDateOrNull()
+            val newEpisodes = cards.mapNotNull { card ->
+                val aTag = card.selectFirst("a") ?: return@mapNotNull null
+                val epUrl = aTag.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                if (epUrl == "#") return@mapNotNull null
 
-                episodes.add(newEpisode(epUrl) {
+                val epTitle = card.selectFirst("h2.Title, h2, h3, .title, .post-title")?.text()?.trim()
+                    ?: aTag.text().trim().takeIf { it.isNotBlank() }
+                    ?: aTag.attr("title").trim().takeIf { it.isNotBlank() }
+                    ?: epUrl.substringAfterLast("/").replace("-", " ")
+
+                val imgTag = card.selectFirst("img")
+                val epPoster = imgTag?.attr("data-src")?.takeIf { it.isNotBlank() }
+                    ?: imgTag?.attr("src")
+
+                val dateStr = epTitle.extractDateOrNull()
+
+                newEpisode(epUrl) {
                     this.name        = epTitle
                     this.posterUrl   = epPoster
                     this.description = dateStr
-                })
-            }
+                }
+            }.distinctBy { it.data } // Remove duplicate elements from nested classes
+
+            episodes.addAll(newEpisodes)
 
             hasMore = pageDoc.selectFirst("a.next, .pagination a[rel=next]") != null
             pageNum++
@@ -249,22 +261,53 @@ class BollyZoneProvider : MainAPI() {
         }
     }
 
-    private fun loadSingleEpisode(url: String, document: org.jsoup.nodes.Document): TvSeriesLoadResponse {
-        val title  = document.selectFirst("h1")?.text()?.trim() ?: url
-        val poster = document.selectFirst("img.film-poster-img, .poster img")?.attr("src")
+    private suspend fun loadSingleEpisode(url: String, document: org.jsoup.nodes.Document): TvSeriesLoadResponse {
+        val title = document.selectFirst("h1.Title")?.text()?.trim() ?: url
+
+        // Grab the high-res background poster if available, fallback to the center poster
+        val poster = document.selectFirst(".Image img.TPostBg")?.attr("src")
+            ?: document.selectFirst("center img")?.attr("src")
+
+        val plot = document.selectFirst(".Description > p")?.text()?.trim()
+        val genres = document.select(".Description p.Genre a").map { it.text().trim() }
+
+        // Find recommendations from "More titles like this"
+        val recommendations = document.select(".MovieListTop.Serie .TPostMv").mapNotNull {
+            it.toEpisodeSearchResult()
+        }
+
         val episode = newEpisode(url) {
             this.name      = title
             this.posterUrl = poster
+            this.description = plot
         }
+
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, listOf(episode)) {
             this.posterUrl = poster
+            this.plot = plot
+            this.tags = genres
+            this.recommendations = recommendations
         }
     }
 
     private fun Element.toEpisodeSearchResult(): SearchResponse? {
-        val href   = selectFirst("a")?.attr("href") ?: return null
-        val title  = selectFirst("h2")?.text()?.trim() ?: return null
-        val poster = selectFirst("img")?.attr("src")
+        val aTag = selectFirst("a") ?: return null
+        val href = aTag.attr("href").takeIf { it.isNotBlank() } ?: return null
+
+        // Skip links that are just containers/placeholders
+        if (href == "#") return null
+
+        val title = selectFirst("h2.Title, h2, h3, h4, .title, .post-title")?.text()?.trim()
+            ?: aTag.text().trim().takeIf { it.isNotBlank() }
+            ?: aTag.attr("title").trim()
+
+        if (title.isBlank()) return null
+
+        // Check for lazy-loaded images (owl-lazy)
+        val img = selectFirst("img")
+        val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() }
+            ?: img?.attr("src")
+
         return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
             this.posterUrl = poster
         }
