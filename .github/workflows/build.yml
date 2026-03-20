@@ -38,12 +38,24 @@ jobs:
       - name: Build extension
         run: ./gradlew BollyZoneProvider:make
 
-      - name: Find built files
-        run: find . -name "*.cs3" -o -name "plugins.json" | grep -v ".git"
+      - name: Generate plugins.json
+        run: |
+          echo '[
+            {
+              "name": "BollyZone",
+              "pluginId": "com.bollyzone",
+              "version": 1,
+              "url": "https://raw.githubusercontent.com/SiddharthJoshi1/cs3_bollyzone/builds/BollyZoneProvider.cs3",
+              "description": "Watch Indian TV Shows and Hindi Dramas from BollyZone",
+              "status": 0,
+              "language": "hi",
+              "iconUrl": "https://www.bollyzone.to/wp-content/uploads/2021/10/bollyzone-logo.png"
+            }
+          ]' > BollyZoneProvider/build/plugins.json
 
       - name: Deploy to builds branch
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           branch: builds
-          folder: .
+          folder: BollyZoneProvider/build
           clean: false
