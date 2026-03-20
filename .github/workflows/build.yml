@@ -53,7 +53,7 @@ jobs:
               \"repositoryUrl\": \"https://github.com/SiddharthJoshi1/cs3_bollyzone\",
               \"fileSize\": $FILESIZE,
               \"description\": \"Watch Indian TV Shows and Hindi Dramas from BollyZone\",
-              \"status\": 0,
+              \"status\": 1,
               \"language\": \"hi\",
               \"authors\": [\"SiddharthJoshi1\"],
               \"tvTypes\": [\"TvSeries\"],
