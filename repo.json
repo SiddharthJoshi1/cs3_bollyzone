@@ -1,0 +1,8 @@
+{
+    "name": "BollyZone by Built By Sid",
+    "description": "Indian TV Shows and Hindi Dramas",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/SiddharthJoshi1/cs3_bollyzone/builds/plugins.json"
+    ]
+}
