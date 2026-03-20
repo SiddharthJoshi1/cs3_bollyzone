@@ -1,0 +1,27 @@
+# Android / Gradle
+.gradle/
+build/
+*.apk
+*.aab
+*.class
+local.properties
+*.iml
+
+# IntelliJ / Android Studio
+.idea/
+*.iws
+*.ipr
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug/test files (not needed in repo)
+bz_cookies.txt
+dummy*.html
+dummy*.txt
+routeFree.html
+flowTvlogy.html
+flowTvlogyFresh.html
+m3u8Test.txt
